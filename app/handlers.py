@@ -44,6 +44,16 @@ async def answer(message: Message, state: FSMContext, storage: SimpleSQLiteStora
         return
 
     await state.set_state(Gen.wait)
+    
+    # Отправляем draft с "Думаю.."
+    await message.bot.send_message_draft(
+        chat_id=message.chat.id,
+        draft_id=message.message_id,
+        text="💡 *Думаю..*",
+        message_thread_id=message.message_thread_id,
+        parse_mode='Markdown'
+    )
+    
     full_text = ''
     last_update_time = asyncio.get_event_loop().time()
     update_interval = 0.2  # минимальный интервал между обновлениями
@@ -78,8 +88,8 @@ async def answer(message: Message, state: FSMContext, storage: SimpleSQLiteStora
                     chat_id=message.chat.id,
                     draft_id=message.message_id,
                     text=draft_text,
-                    message_thread_id=message.message_thread_id
-                    # parse_mode='Markdown'
+                    message_thread_id=message.message_thread_id,
+                    parse_mode='Markdown'
                 )
                 last_update_time = current_time
                 is_rate_limited = False
@@ -101,8 +111,8 @@ async def answer(message: Message, state: FSMContext, storage: SimpleSQLiteStora
                         chat_id=message.chat.id,
                         draft_id=message.message_id,
                         text=draft_text,
-                        message_thread_id=message.message_thread_id
-                        # parse_mode='Markdown'
+                        message_thread_id=message.message_thread_id,
+                        parse_mode='Markdown'
                     )
                     last_update_time = asyncio.get_event_loop().time()
                     is_rate_limited = False

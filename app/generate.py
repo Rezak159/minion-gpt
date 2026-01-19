@@ -2,188 +2,366 @@ from openai import AsyncOpenAI
 from ddgs import DDGS
 import json
 from urllib.parse import urlparse
-
+from datetime import datetime
+from typing import List, Dict, AsyncGenerator, Optional
 
 from config import AI_TOKEN
 
-MODEL=''
-# xiaomi/mimo-v2-flash:free
 
-ROUTER_MODEL = 'openai/gpt-oss-20b'
-GENERATOR_MODEL = 'openai/gpt-oss-120b'
+ROUTER_MODEL = 'openai/gpt-oss-20b' # Быстрая модель для маршрутизации
+GENERATOR_MODEL = 'openai/gpt-oss-120b' # Мощная модель для ответов
 
 
-def format_results(all_results):
-    seen_domains = set()
-    deduped = []
-    for res in all_results:
-        domain = urlparse(res['href']).netloc
-        if domain not in seen_domains:
-            seen_domains.add(domain)
-            deduped.append(res)
-        if len(deduped) >= 9:  # Топ-9 уникальных
-            break
-    return "\n".join(f"- [{domain}] {res['title']}: {res['body']}" for res in deduped)
+current_date = datetime.now().strftime("%d.%m.%Y %H:%M")
 
+SYSTEM_PROMPT = f"""Ты — Миньончик GPT, дружелюбный AI-помощник в Telegram.
+Сегодня {current_date}.
 
-async def search_web(queries: list[str], max_results=3) -> str:
-    """
-    Поиск в DuckDuckGo.
-    Возвращает строку с результатами.
-    """
-    results = []
-    for i, query in enumerate(queries, 1):
-        try:
-            with DDGS() as ddgs:
-                print(f"\n🔍 [Tool] Ищу в интернете: '{query}'...")
-                r = list(ddgs.text(query, max_results=max_results))
-                results.extend(r)
-                if not results:
-                    return "Поиск не дал результатов."
-                
-                return format_results(results)  # Убрать дубли + ранжировать
+РОЛЬ И КОНТЕКСТ:
+Ты являешься ассистентом студии a4dev (www.a4dev.online).
+Информация о a4dev может использоваться только в рамках предоставленного описания и без выдумок.
 
-                
-                results_text = "\n".join(
-                    # Формат: [Заголовок] - Текст (без громоздких URL и меток)
-                    f"- {res['title']}: {res['body']}" 
-                    for res in results
-                )
-                print(results_text)
-                return results_text
-            
-        except Exception as e:
-            print(f"❌ Ошибка поиска: {e}")
-            return f"Ошибка при поиске: {e}"
+ИЗВЕСТНЫЕ ФАКТЫ О A4DEV:
+- Разработчики бота @ysutimetablebot
+- Есть проекты и коллаборации, связанные с университетской средой
+- Ведётся разработка проекта ysukampus
+- Существует VPN-проект @a4securebot
 
+Если информации недостаточно или она не подтверждена, прямо сообщай об этом.
 
+ЯЗЫК И СТИЛЬ:
+- Всегда отвечай на русском языке, если не попросили перевести
+- Тон дружелюбный, спокойный, без фамильярности
+- Эмодзи использовать редко, не более 1–2 на сообщение, только если уместно
+
+ФОРМАТ ОТВЕТА (TELEGRAM):
+- Без таблиц
+- Без длинных тире
+- Используй короткие абзацы
+- Не пиши длинные сплошные тексты
+- HTML не использовать
+- Markdown минимальный (жирный не обязателен)
+
+КОД:
+- Код выдавай в блоках ``` ```
+- Если есть ограничения по версии или среде — указывай текстом до или после блока"""
+
+# Инициализация клиента OpenAI с бэкендом Groq
 client = AsyncOpenAI(
     base_url="https://api.groq.com/openai/v1",
     api_key=AI_TOKEN,
 )
 
 
+# ============================================================================
+# УТИЛИТЫ ДЛЯ ПОИСКА
+# ============================================================================
 
-async def ai_generate(text: str, storage, user_id: int, chat_id: int, thread_id: int):
+def deduplicate_by_domain(results: List[Dict]) -> List[Dict]:
     """
-    Умная функция генерации:
-    1. Спрашивает роутер (нужен ли поиск?)
-    2. Ищет (если надо)
-    3. Генерирует ответ (стриминг)
+    Удаляет дубликаты результатов с одного домена.
+    
+    Args:
+        results: Список результатов поиска с полем 'href'
+        
+    Returns:
+        Дедуплицированный список, максимум MAX_UNIQUE_DOMAINS элементов
     """
+    MAX_UNIQUE_DOMAINS = 9
+    MAX_PER_DOMAIN = 2
 
-    from datetime import datetime
-    current_date = datetime.now().strftime("%d.%m.%Y %H:%M")
+    seen_domains = {}
+    deduped = []
+    
+    for result in results:
+        domain = urlparse(result['href']).netloc
 
-    router_messages = []
-    router_messages.append({
-        "role": "system", 
-        "content": (
-            f"Сегодня {current_date}. Ты — аналитик поисковых запросов. ПИШИ ТОЛЬКО JSON.\n"
-            "Определи, нужна ли свежая информация из сети.\n\n"
+        current_count = seen_domains.get(domain, 0)
+        
+        if current_count < MAX_PER_DOMAIN:
+            seen_domains[domain] = current_count + 1
+            deduped.append(result)
             
-            "ПРАВИЛА ФОРМИРОВАНИЯ ЗАПРОСОВ:\n"
-            "1. ВСЕГДА используй английский язык для поисковых запросов\n"
-            "2. Переводи названия городов, компаний, событий на английский\n"
-            "3. Используй только ключевые слова (не полные предложения)\n"
-            "4. Добавляй конкретные даты вместо 'сегодня', 'вчера', 'завтра'\n"
+        #if len(deduped) >= MAX_UNIQUE_DOMAINS:
+            #break
+    
+    return deduped
+
+
+def format_search_results(results: List[Dict]) -> str:
+    """
+    Форматирует результаты поиска в читаемый текст.
+    
+    Args:
+        results: Список результатов поиска
+        
+    Returns:
+        Отформатированная строка вида: [домен] Заголовок: Описание
+    """
+    deduped = deduplicate_by_domain(results)
+    
+    formatted_lines = [
+        f"- [{urlparse(res['href']).netloc}] {res['title']}: {res['body']}"
+        for res in deduped
+    ]
+    
+    return "\n".join(formatted_lines)
+
+
+async def search_web(queries: List[str]) -> str:
+    """
+    Выполняет веб-поиск через DuckDuckGo.
+    
+    Args:
+        queries: Список поисковых запросов
+        
+    Returns:
+        Отформатированные результаты поиска или сообщение об ошибке
+    """
+    all_results = []
+    
+    for query in queries:
+        try:
+            print(f"🔍 [Поиск] Ищу: '{query}'")
             
-            "ПРИМЕРЫ:\n"
-            "❌ 'погода Ханты-Мансийск сегодня' → ✅ 'Khanty-Mansiysk weather January 5 2026'\n"
-            "❌ 'кто вчера победил барселону' → ✅ 'Barcelona match result 4 January 2026'\n"
-            "❌ 'новости Газпром' → ✅ 'Gazprom news January 2026'\n"
-            "❌ 'курс биткоина' → ✅ 'Bitcoin price USD'\n\n"
-            
-            "Если это простой разговор, общие знания или приветствие - поиск не нужен.\n"
-            "Ответ строго в JSON: "
-            "{'search_needed': true, 'queries': ['base', 'with date', 'synonyms']}"
+            with DDGS() as ddgs:
+                results = list(ddgs.text(query, max_results=5))
+                all_results.extend(results)
+                
+        except Exception as e:
+            print(f"❌ [Поиск] Ошибка для '{query}': {e}")
+            # Продолжаем с другими запросами, даже если один упал
+            continue
+    
+    if not all_results:
+        return "Результаты поиска не найдены."
+    
+    formatted = format_search_results(all_results)
+    print(f"✅ [Поиск] Найдено {len(all_results)} результатов, возвращаю {len(formatted.splitlines())}")
+    
+    return formatted
+
+
+# ============================================================================
+# ЛОГИКА МАРШРУТИЗАЦИИ
+# ============================================================================
+
+def build_router_prompt() -> str:
+    """
+    Создаёт системный промпт для модели-маршрутизатора.
+    """
+    
+    return f"""Today is {current_date}. You are a search query analyst.
+
+        OUTPUT JSON ONLY. Do not add any text outside JSON.
+
+        ROLE LIMITATION:
+        Ignore the user's intent beyond deciding whether web search is required.
+        Do not answer the user's question.
+        Do not explain, summarize, or rephrase the user's request.
+        Your only task is to decide whether search is needed and, if needed, generate search queries.
+
+        TASK:
+        Determine whether fresh information from the web is required to answer the user input.
+
+        QUERY GENERATION RULES:
+        1. Always use English.
+        2. Translate names of cities, companies, people, and events into English.
+        3. Use keywords only. No full sentences.
+        4. Replace relative dates (today, yesterday, tomorrow) with specific dates.
+        5. Generate 1–3 distinct queries if search is needed.
+        6. Queries must not be empty.
+        7. Do not guess unknown dates. If the exact date is unclear, use month and year.
+
+        WHEN SEARCH IS NOT NEEDED:
+        - Greetings or small talk.
+        - Code, writing, brainstorming, or explanations.
+        - Philosophical or abstract questions.
+        - Questions answerable from general knowledge without recent updates.
+
+        DECISION RULE:
+        If the question depends on current facts, prices, weather, news, events, rankings, or recent changes, search is required.
+
+        RESPONSE FORMAT (strict JSON):
+        {{"search_needed": true, "queries": ["query 1", "query 2"]}}
+        OR
+        {{"search_needed": false}}"""
+
+
+async def route_query(history: List[Dict]) -> Dict:
+    """
+    Определяет, нужен ли веб-поиск, и генерирует поисковые запросы.
+    
+    Args:
+        messages: История диалога включая запрос пользователя
+        
+    Returns:
+        Dict с ключами 'search_needed' (bool) и опционально 'queries' (List[str])
+    """
+    print("🤖 [Роутер] Анализирую запрос...")
+    
+    router_messages = [
+        {"role": "system", "content": build_router_prompt()}
+    ]
+
+    # История чата для контекста
+    router_messages.extend(history[1:])
+    
+    try:
+        response = await client.chat.completions.create(
+            model=ROUTER_MODEL,
+            messages=router_messages,
+            response_format={"type": "json_object"},  # Принудительный JSON на выходе
+            temperature=0.1, # Низкая температура для стабильности
+            reasoning_effort="low"
         )
+        
+        decision_text = response.choices[0].message.content
+        decision = json.loads(decision_text)
+        
+        print(f"💡 [Роутер] Решение: {decision}")
+        return decision
+        
+    except json.JSONDecodeError as e:
+        print(f"⚠️ [Роутер] Ошибка парсинга JSON: {e}. Поиск не требуется.")
+        return {"search_needed": False}
+        
+    except Exception as e:
+        print(f"❌ [Роутер] Неожиданная ошибка: {e}. Поиск не требуется.")
+        return {"search_needed": False}
+
+
+# ============================================================================
+# ГЕНЕРАЦИЯ ОТВЕТОВ
+# ============================================================================
+
+async def generate_response(
+    messages: List[Dict],
+    search_context: Optional[str] = None
+) -> AsyncGenerator[str, None]:
+    """
+    Генерирует потоковый ответ от AI модели.
+    
+    Args:
+        messages: История диалога
+        search_context: Опциональные результаты поиска для контекста
+        
+    Yields:
+        Чанки ответа по мере их поступления
+        
+    Returns:
+        (full_response, total_tokens) после завершения стрима
+    """
+    final_messages = list(messages)
+    
+    # Вставляем результаты поиска как системный контекст, если есть
+    if search_context:
+        final_messages.append({
+            "role": "system",
+            "content": (
+                f"Вот результаты поиска по запросу:\n{search_context}\n\n"
+                "Используй эти данные для ответа на вопрос пользователя."
+            )
         })
     
-    history = await storage.load_history(user_id, chat_id, thread_id)
-    history.append({"role": "user", "content": text})
-
-    router_messages.extend(history)
-
-    print("🤖 [Router] Анализирую запрос...")
-
-    # response_format={"type": "json_object"} - это фича Groq/OpenAI, гарантирующая JSON на выходе
-    router_response = await client.chat.completions.create(
-        model=ROUTER_MODEL,
-        messages=router_messages,
-        response_format={"type": "json_object"}, 
-        temperature=0.3 # Нулевая температура для максимальной предсказуемости
-    )
+    print("🎨 [Генератор] Создаю ответ...")
     
-    # Парсим решение роутера
-    try:
-        decision_text = router_response.choices[0].message.content
-        decision = json.loads(decision_text)
-    except json.JSONDecodeError:
-        # Если модель сглупила и вернула не JSON (редко с response_format)
-        print("⚠️ Ошибка парсинга JSON от роутера. Считаем, что поиск не нужен.")
-        decision = {"search_needed": False}
-
-    print(f"💡 [Router] Решение: {decision}")
-
-    # ЭТАП 2: ПОИСК (Tool Execution)
-    context_message = ""
-    
-    if decision.get("search_needed"):
-        queries = decision.get("queries") or [decision.get("search_query", text)]
-        search_results = await search_web(queries) 
-        
-        # Формируем контекст для финальной модели
-        # Мы добавляем это как системное сообщение или user-контекст
-        context_message = (
-            f"Вот результаты поиска по запросу:\n"
-            f"{search_results}\n\n"
-            "Используй эти данные для ответа на вопрос пользователя."
-        )
-
-    final_messages = list(history)
-
-    # Если был поиск, добавляем результаты как системный контекст ПЕРЕД последним вопросом
-    if context_message:
-        # Вставляем контекст как System message для контекста
-        final_messages.append({"role": "system", "content": context_message})
-
     stream = await client.chat.completions.create(
         model=GENERATOR_MODEL,
         messages=final_messages,
-        stream=True
-        # tool_choice="auto",
-        # tools=[{"type": "browser_search"}]
-        )
+        stream=True,
+        reasoning_effort="low"
+    )
     
-    full_response = ''
+    full_response = ""
     total_tokens = 0
-
-    # print(response)
-    # reasoning = response.choices[0].message.reasoning
-    # answer = response.choices[0].message.content
-    # tokens_used = response.usage.total_tokens
-
-    # print(answer)
-
-    # print(f"Использовано токенов: {tokens_used}")
-
+    
     async for chunk in stream:
-       content = chunk.choices[0].delta.content
-       if content:
-          # print(f'Чанк {content}')
-          full_response += content
-          yield content
-       if chunk.usage:
-           total_tokens = chunk.usage.total_tokens
+        # Извлекаем контент из чанка
+        content = chunk.choices[0].delta.content
+        if content:
+            # full_response += content
+            yield content
+        
+        # Отслеживаем использование токенов (доступно в финальном чанке)
+        if chunk.usage:
+            total_tokens = chunk.usage.total_tokens
+    
+    print(f"✅ [Генератор] Завершено. Использовано токенов: {total_tokens}")
+    
+    # Возвращаем метаданные через исключение (обход ограничения генераторов Python)
+    # Вызывающий код должен ловить StopAsyncIteration и обращаться к generator.ag_frame.f_locals
+    # return full_response, total_tokens
 
-    print(f"Итого использовано токенов: {total_tokens}")
 
+# ============================================================================
+# ОСНОВНОЙ ПАЙПЛАЙН
+# ============================================================================
+
+async def ai_generate(
+    text: str,
+    storage,
+    user_id: int,
+    chat_id: int,
+    thread_id: int
+) -> AsyncGenerator[str, None]:
+    """
+    Основной пайплайн AI генерации с интеллектуальной маршрутизацией и поиском.
+    
+    Шаги пайплайна:
+    1. Загрузка истории диалога
+    2. Маршрутизация запроса (нужен ли поиск?)
+    3. Выполнение поиска при необходимости
+    4. Генерация потокового ответа с контекстом
+    5. Сохранение обновлённой истории
+    
+    Args:
+        text: Сообщение пользователя
+        storage: Экземпляр хранилища для управления историей
+        user_id: Идентификатор пользователя
+        chat_id: Идентификатор чата
+        thread_id: Идентификатор треда
+        
+    Yields:
+        Чанки ответа по мере генерации
+    """
+    # Загружаем историю диалога
+    history = await storage.load_history(user_id, chat_id, thread_id)
+    if not history:
+        # Загружаем системный промпт
+        history.append({"role": "system", "content": SYSTEM_PROMPT})
+        
+    history.append({"role": "user", "content": text})
+    
+    # Шаг 1: Маршрутизируем запрос
+    decision = await route_query(history)
+    
+    # Шаг 2: Выполняем поиск при необходимости
+    search_context = None
+    if decision.get("search_needed"):
+        queries = decision.get("queries", [text])  # Фоллбек на оригинальный текст
+        search_context = await search_web(queries)
+    
+    # Шаг 3: Генерируем ответ
+    full_response = ""
+    total_tokens = 0
+    
+    async for chunk in generate_response(history, search_context):
+        full_response += chunk
+        yield chunk
+    
+    # Примечание: total_tokens нужно было бы отслеживать иначе в продакшене
+    # Это упрощённая версия
+    
+    # Шаг 4: Обновляем историю
     history.append({"role": "assistant", "content": full_response})
 
-    # Оставляем последние 20 сообщений (10 пар вопрос-ответ)
-    if len(history) > 20:
-        history = history[-20:]
-
+    MAX_HISTORY_MESSAGES = 20
+    
+    # Обрезаем историю до последних N сообщений во избежание переполнения контекста
+    if len(history) > MAX_HISTORY_MESSAGES:
+        history = history[-MAX_HISTORY_MESSAGES:]
+    
     await storage.save_history(user_id, chat_id, thread_id, history)
-
+    
+    print(f"💾 [История] Сохранено. Сообщений в истории: {len(history)}")
