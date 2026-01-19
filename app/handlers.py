@@ -1,3 +1,4 @@
+import asyncio
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery
 from aiogram.filters import CommandStart, Command
@@ -6,11 +7,9 @@ from aiogram.fsm.context import FSMContext
 
 from aiogram.exceptions import TelegramRetryAfter
 
-import asyncio
-
-
-from app.generate import ai_generate, clear_context
-from app.utils import split_message_by_lines
+from app.generate import ai_generate
+from app.utils import smart_split
+from app.database import SimpleSQLiteStorage 
 
 router = Router()
 
@@ -20,22 +19,26 @@ class Gen(StatesGroup):
 
 @router.message(CommandStart())
 async def cmd_start(message: Message):
-    await message.answer('Добро пожаловать в бот!')
+    await message.answer('Добро пожаловать в бота! Просто напиши что нибудь в чат и я отвечу.')
 
 
 @router.message(Command('clear'))
-async def get_help(message: Message):
-    await clear_context()
-    await message.answer("Контекст диалога очищен.")
+async def cmd_clear(message: Message, storage: SimpleSQLiteStorage):
+    await storage.clear_history(
+        message.from_user.id,
+        message.chat.id,
+        message.message_thread_id
+    )
+    await message.answer("История очищена 🗑️")
 
 
 @router.message(Gen.wait)
 async def wait(message: Message):
-    await message.reply('Нужно подождать')
+    await message.reply('Нужно подождать..')
 
 
 @router.message()
-async def answer(message: Message, state: FSMContext):
+async def answer(message: Message, state: FSMContext, storage: SimpleSQLiteStorage):
     if not message.text:
         await message.answer("Отправьте текстовое сообщение.")
         return
@@ -48,7 +51,13 @@ async def answer(message: Message, state: FSMContext):
     rate_limit_until = 0
 
     try:
-        async for chunk in ai_generate(message.text):
+        async for chunk in ai_generate(
+            text=message.text,
+            storage=storage,
+            user_id=message.from_user.id,
+            chat_id=message.chat.id,
+            thread_id=message.message_thread_id
+        ):
             full_text += chunk
             current_time = asyncio.get_event_loop().time()
 
@@ -56,22 +65,25 @@ async def answer(message: Message, state: FSMContext):
             # И не находимся ли мы в rate limit
             if current_time - last_update_time < update_interval:
                 continue
-
+            
+            # Накапливаем чанки во время rate limit
             if is_rate_limited and current_time < rate_limit_until:
-                # Накапливаем чанки во время rate limit
                 continue
 
             try:
+                # Ограничиваем draft до 4000 символов
+                draft_text = full_text[:4000] + ('...' if len(full_text) > 4000 else '')
+
                 await message.bot.send_message_draft(
                     chat_id=message.chat.id,
                     draft_id=message.message_id,
-                    text=full_text,
-                    message_thread_id=message.message_thread_id,
-                    parse_mode='Markdown'
+                    text=draft_text,
+                    message_thread_id=message.message_thread_id
+                    # parse_mode='Markdown'
                 )
                 last_update_time = current_time
                 is_rate_limited = False
-                await asyncio.sleep(0.05)
+                await asyncio.sleep(0.01)
 
             except TelegramRetryAfter as e:
                 print(f'Rate limit: ждем {e.retry_after} сек, накапливаем чанки')
@@ -82,23 +94,35 @@ async def answer(message: Message, state: FSMContext):
                 await asyncio.sleep(e.retry_after)
 
                 # После ожидания отправляем накопленный текст
+                draft_text = full_text[:4000] + ('...' if len(full_text) > 4000 else '')
+                
                 try:
                     await message.bot.send_message_draft(
                         chat_id=message.chat.id,
                         draft_id=message.message_id,
-                        text=full_text,
-                        message_thread_id=message.message_thread_id,
-                        parse_mode='Markdown'
+                        text=draft_text,
+                        message_thread_id=message.message_thread_id
+                        # parse_mode='Markdown'
                     )
                     last_update_time = asyncio.get_event_loop().time()
                     is_rate_limited = False
+
                 except Exception as e:
                     print(f'Ошибка после retry: {e}')
+
             except Exception as e:
                 print(f'Другая ошибка: {e}')
 
-        # Финальная отправка
-        await message.answer(full_text, parse_mode='Markdown')
+        # ЗДЕСЬ используем smart_split для финальной отправки
+        parts = smart_split(full_text)
+
+        for i, part in enumerate(parts):
+            try:
+                await message.answer(part, parse_mode='Markdown')
+                if i < len(parts) - 1:  # Пауза между частями
+                    await asyncio.sleep(0.3)
+            except Exception as e:
+                print(f'Ошибка отправки части {i+1}: {e}')
     finally:
         await state.clear()
     
