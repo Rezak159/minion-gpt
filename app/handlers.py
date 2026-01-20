@@ -1,6 +1,6 @@
 import asyncio
 from aiogram import Router, F
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message, CallbackQuery, ReplyKeyboardRemove
 from aiogram.filters import CommandStart, Command
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
@@ -19,7 +19,10 @@ class Gen(StatesGroup):
 
 @router.message(CommandStart())
 async def cmd_start(message: Message):
-    await message.answer('Добро пожаловать в бота! Просто напиши что нибудь в чат и я отвечу.')
+    await message.answer(
+        'Добро пожаловать в бота! Просто напиши что нибудь в чат и я отвечу.',
+        reply_markup=ReplyKeyboardRemove()
+    )
 
 
 @router.message(Command('clear'))
@@ -39,6 +42,9 @@ async def wait(message: Message):
 
 @router.message()
 async def answer(message: Message, state: FSMContext, storage: SimpleSQLiteStorage):
+    if not message.text and message.content_type in ['forum_topic_created', 'new_chat_members', 'pinned_message']:
+        return
+    
     if not message.text:
         await message.answer("Отправьте текстовое сообщение.")
         return
@@ -49,9 +55,9 @@ async def answer(message: Message, state: FSMContext, storage: SimpleSQLiteStora
     await message.bot.send_message_draft(
         chat_id=message.chat.id,
         draft_id=message.message_id,
-        text="💡 *Думаю..*",
+        text="💡 <b><i>Думаю..</i></b>",
         message_thread_id=message.message_thread_id,
-        parse_mode='Markdown'
+        parse_mode='HTML'
     )
     
     full_text = ''
@@ -89,7 +95,7 @@ async def answer(message: Message, state: FSMContext, storage: SimpleSQLiteStora
                     draft_id=message.message_id,
                     text=draft_text,
                     message_thread_id=message.message_thread_id,
-                    parse_mode='Markdown'
+                    parse_mode=None
                 )
                 last_update_time = current_time
                 is_rate_limited = False
@@ -112,7 +118,7 @@ async def answer(message: Message, state: FSMContext, storage: SimpleSQLiteStora
                         draft_id=message.message_id,
                         text=draft_text,
                         message_thread_id=message.message_thread_id,
-                        parse_mode='Markdown'
+                        parse_mode=None
                     )
                     last_update_time = asyncio.get_event_loop().time()
                     is_rate_limited = False
@@ -128,7 +134,8 @@ async def answer(message: Message, state: FSMContext, storage: SimpleSQLiteStora
 
         for i, part in enumerate(parts):
             try:
-                await message.answer(part, parse_mode='Markdown')
+                # Используем parse_mode=None (plain text) для избежания ошибок с Markdown
+                await message.answer(part, parse_mode=None)
                 if i < len(parts) - 1:  # Пауза между частями
                     await asyncio.sleep(0.3)
             except Exception as e:
