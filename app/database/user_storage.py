@@ -1,36 +1,31 @@
 import aiosqlite
+import logging
 from datetime import datetime, timedelta
 from typing import Optional, Dict
 
+from .base import BaseStorage
 
-class UserStorage:
+logger = logging.getLogger(__name__)
+
+class UserStorage(BaseStorage):
     """Класс для управления данными пользователей в SQLite"""
-    
-    def __init__(self, db_path: str = "database.db"):
-        """
-        Инициализация хранилища пользователей
         
-        Args:
-            db_path: путь к файлу базы данных
-        """
-        self.db_path = db_path
-        
+    def __init__(self, db_path: str = DB_PATH):
+        super().__init__(db_path)
+
         # Конфигурация лимитов для тарифных планов
         self.TARIFF_LIMITS = {
             'free': {
                 'requests_per_day': 15,
-                'tokens_per_day': 7500,
-                'model': 'gpt-oss-120b'
+                'tokens_per_day': 7500
             },
             'pro': {
                 'requests_per_day': 200,
-                'tokens_per_day': 200000,
-                'model': 'gpt-oss-120b'
+                'tokens_per_day': 200000
             },
             'ultra': {
                 'requests_per_day': -1,
-                'tokens_per_day': -1,
-                'model': 'gpt-oss-120b'
+                'tokens_per_day': -1
             }
         }
     
@@ -77,10 +72,13 @@ class UserStorage:
             """, (user_id,))
             
             row = await cursor.fetchone()
+
+            logger.debug(f"DB Query: SELECT ... for user {user_id}")
             
             if row:
                 return dict(row)
             return None
+
     
     async def create_user(self, user_id: int, username: Optional[str] = None):
         """
@@ -105,7 +103,7 @@ class UserStorage:
             await conn.commit()
             
             if cursor.rowcount > 0:
-                print(f"✅ Создан новый пользователь: {user_id} (@{username})")
+                logger.info(f"✅ Создан новый пользователь: {user_id} (@{username})")
     
     async def update_usage(self, user_id: int, requests_delta: int = 1, tokens_delta: int = 0):
         """
@@ -128,6 +126,8 @@ class UserStorage:
             """, (requests_delta, requests_delta, tokens_delta, user_id))
             
             await conn.commit()
+
+        logger.debug(f"DB Query: UPDATE ... for user {user_id}")
     
     async def reset_daily_limits(self, user_id: int):
         """
@@ -150,7 +150,7 @@ class UserStorage:
             """, (now, user_id))
             
             await conn.commit()
-            print(f"🔄 Сброшены дневные лимиты для пользователя {user_id}")
+            logger.info(f"🔄 Сброшены дневные лимиты для пользователя {user_id}")
     
     async def check_and_reset_limits(self, user_id: int):
         """
@@ -205,7 +205,7 @@ class UserStorage:
             """, (tariff, expires_at, user_id))
             
             await conn.commit()
-            print(f"💳 Обновлена подписка для пользователя {user_id}: {tariff}")
+            logger.info(f"💳 Обновлена подписка для пользователя {user_id}: {tariff}")
     
     def get_limits(self, tariff_plan: str) -> Dict:
         """
