@@ -2,15 +2,15 @@ import aiosqlite
 import json
 
 
-class SimpleSQLiteStorage:
+class ChatStorage:
     """Класс для хранения истории чатов в SQLite"""
     
-    def __init__(self, db_path: str = "chat_history.db"):
+    def __init__(self, db_path: str = "database.db"):
         """
         Инициализация хранилища
         
         Args:
-            db_path: путь к файлу базы данных (по умолчанию chat_history.db)
+            db_path: путь к файлу базы данных (по умолчанию database.db)
         """
         self.db_path = db_path
         # При создании объекта нельзя использовать await,
@@ -28,7 +28,7 @@ class SimpleSQLiteStorage:
             
             # Создаем таблицу, если её еще нет (IF NOT EXISTS)
             await cursor.execute("""
-                CREATE TABLE IF NOT EXISTS chat_history (
+                CREATE TABLE IF NOT EXISTS database (
                     user_id INTEGER,
                     chat_id INTEGER,
                     thread_id INTEGER,
@@ -69,7 +69,7 @@ class SimpleSQLiteStorage:
             
             # INSERT OR REPLACE = если запись существует - обновляем, если нет - создаем
             await cursor.execute("""
-                INSERT OR REPLACE INTO chat_history 
+                INSERT OR REPLACE INTO database 
                 (user_id, chat_id, thread_id, messages)
                 VALUES (?, ?, ?, ?)
             """, (
@@ -108,7 +108,7 @@ class SimpleSQLiteStorage:
             
             # SELECT выбирает только колонку messages
             await cursor.execute("""
-                SELECT messages FROM chat_history
+                SELECT messages FROM database
                 WHERE user_id = ? AND chat_id = ? AND thread_id = ?
             """, (user_id, chat_id, thread_id or 0))
             
@@ -146,7 +146,7 @@ class SimpleSQLiteStorage:
             
             # DELETE удаляет строку из таблицы
             await cursor.execute("""
-                DELETE FROM chat_history
+                DELETE FROM database
                 WHERE user_id = ? AND chat_id = ? AND thread_id = ?
             """, (user_id, chat_id, thread_id or 0))
             
@@ -167,7 +167,7 @@ class SimpleSQLiteStorage:
             
             # Выбираем все записи
             await cursor.execute("""
-                SELECT user_id, chat_id, thread_id FROM chat_history
+                SELECT user_id, chat_id, thread_id FROM database
             """)
             
             # fetchall() возвращает список всех строк
