@@ -1,4 +1,4 @@
-def smart_split(text: str, max_length: int = 4000) -> list[str]:
+def smart_split(text: str, max_length: int = 3500) -> list[str]:
     """Разделяет текст по переносам строк и пробелам"""
     if len(text) <= max_length:
         return [text]

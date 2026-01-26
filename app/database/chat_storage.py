@@ -1,18 +1,17 @@
 import aiosqlite
 import json
+import logging
 
+from .base import BaseStorage, DB_PATH
 
-class ChatStorage:
+logger = logging.getLogger(__name__)
+
+class ChatStorage(BaseStorage):
     """Класс для хранения истории чатов в SQLite"""
     
-    def __init__(self, db_path: str = "database.db"):
-        """
-        Инициализация хранилища
-        
-        Args:
-            db_path: путь к файлу базы данных (по умолчанию database.db)
-        """
-        self.db_path = db_path
+    def __init__(self, db_path: str = DB_PATH):
+        super().__init__(db_path)
+
         # При создании объекта нельзя использовать await,
         # поэтому инициализацию БД делаем в отдельном методе
     
@@ -84,7 +83,7 @@ class ChatStorage:
             # Сохраняем изменения
             await conn.commit()
             
-            print(f"✅ Сохранено {len(messages)} сообщений для юзера {user_id}")
+            logger.info(f"✅ Сохранено {len(messages)} сообщений для юзера {user_id}")
     
     async def load_history(
         self, 
@@ -120,11 +119,11 @@ class ChatStorage:
                 # result это tuple, берем первый элемент (JSON строка)
                 # Парсим JSON обратно в список Python
                 history = json.loads(result[0])
-                # print(f"📖 Загружено {len(history)} сообщений для юзера {user_id}")
+                # logger.info(f"📖 Загружено {len(history)} сообщений для юзера {user_id}")
                 return history
             
             # Если записи нет, возвращаем пустой список
-            # print(f"📭 История пуста для юзера {user_id}")
+            # logger.info(f"📭 История пуста для юзера {user_id}")
             return []
     
     async def clear_history(
@@ -152,7 +151,7 @@ class ChatStorage:
             
             await conn.commit()
             
-            # print(f"🗑️ История очищена для юзера {user_id}")
+            # logger.info(f"🗑️ История очищена для юзера {user_id}")
     
     async def get_all_users(self) -> list:
         """

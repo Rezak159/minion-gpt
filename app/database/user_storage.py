@@ -1,9 +1,9 @@
 import aiosqlite
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
 from typing import Optional, Dict
 
-from .base import BaseStorage
+from .base import BaseStorage, DB_PATH
 
 logger = logging.getLogger(__name__)
 
@@ -16,8 +16,8 @@ class UserStorage(BaseStorage):
         # Конфигурация лимитов для тарифных планов
         self.TARIFF_LIMITS = {
             'free': {
-                'requests_per_day': 15,
-                'tokens_per_day': 7500
+                'requests_per_day': 17,
+                'tokens_per_day': 10000
             },
             'pro': {
                 'requests_per_day': 200,
@@ -236,12 +236,29 @@ class UserStorage(BaseStorage):
         # Получаем лимиты для тарифа
         limits = self.get_limits(user['tariff_plan'])
         
+        def round_timedelta_to_hour(td):
+            """Округлить timedelta до полных часов"""
+            total_seconds = td.total_seconds()
+            hours = round(total_seconds / 3600) + 1 # округление до часа
+            wait_time = timedelta(hours=hours)
+            return int(wait_time.total_seconds() // 3600)
+        
+        # Парсим дату последнего обновления
+        last_update = datetime.fromisoformat(user['limits_updated_at'])
+        now = datetime.now()
+
+        t1 = timedelta(days=1) - (now - last_update)
+        t2 = datetime.combine((now + timedelta(days=1)).date(), time()) - now
+
+        wait_time = round_timedelta_to_hour(min(t1, t2))
+        
+        
         # Проверяем лимит запросов (если не безлимит)
         if limits['requests_per_day'] != -1:
             if user['requests_today'] >= limits['requests_per_day']:
                 return False, (
                     f"❌ Достигнут дневной лимит запросов ({limits['requests_per_day']}).\n"
-                    f"Попробуйте завтра или обновите тариф!"
+                    f"Попробуйте через {wait_time}ч или обновите тариф!"
                 )
         
         # Проверяем лимит токенов (если не безлимит)
@@ -249,7 +266,7 @@ class UserStorage(BaseStorage):
             if user['tokens_today'] >= limits['tokens_per_day']:
                 return False, (
                     f"❌ Достигнут дневной лимит токенов ({limits['tokens_per_day']}).\n"
-                    f"Попробуйте завтра или обновите тариф!"
+                    f"Попробуйте через {wait_time}ч или обновите тариф!"
                 )
         
         return True, ""

@@ -8,14 +8,15 @@ from logging.handlers import RotatingFileHandler
 
 
 from aiogram import Bot, Dispatcher
-
 from aiogram.types import BotCommand, BotCommandScopeDefault
 
 from config import TG_TOKEN
 
 from app.handlers import router
-from app.chat_storage import ChatStorage
-from app.user_storage import UserStorage
+
+from app.database.base import DB_PATH
+from app.database.chat_storage import ChatStorage
+from app.database.user_storage import UserStorage
 
 logging.basicConfig(
     level=logging.INFO,
@@ -39,11 +40,11 @@ async def set_commands(bot: Bot):
 async def main():
     bot = Bot(token=TG_TOKEN)
 
-    storage = ChatStorage('database.db')
+    storage = ChatStorage(DB_PATH)
     await storage.init_db()
     logger.info("✅ База данных истории чатов инициализирована")
     
-    user_storage = UserStorage('database.db')
+    user_storage = UserStorage(DB_PATH)
     await user_storage.init_db()
     logger.info("✅ База данных пользователей инициализирована")
 

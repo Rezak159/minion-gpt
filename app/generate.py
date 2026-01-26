@@ -96,8 +96,13 @@ def format_search_results(results: List[Dict]) -> str:
         f"- [{urlparse(res['href']).netloc}] {res['title']}: {res['body']}"
         for res in deduped
     ]
-    
-    return "\n".join(formatted_lines)
+
+    links = [
+        {"url": res['href'], "title": urlparse(res['href']).netloc} 
+        for res in deduped
+    ]
+
+    return "\n".join(formatted_lines), links
 
 
 async def search_web(queries: List[str]) -> str:
@@ -126,12 +131,12 @@ async def search_web(queries: List[str]) -> str:
             continue
     
     if not all_results:
-        return "Результаты поиска не найдены."
+        return "Результаты поиска не найдены." ""
     
-    formatted = format_search_results(all_results)
+    formatted, links = format_search_results(all_results)
     print(f"✅ [Поиск] Найдено {len(all_results)} результатов, возвращаю {len(formatted.splitlines())}")
     
-    return formatted
+    return formatted, links
 
 
 # ============================================================================
@@ -144,41 +149,30 @@ def build_router_prompt() -> str:
     """
     current_date = datetime.now().strftime("%d.%m.%Y %H:%M")
     
-    return f"""Today is {current_date}. You are a search query analyst.
+    return f"""Today is {current_date}. You are a search query router.
 
-        Respond ONLY with a plain text JSON string. Never use external tools, functions, or internal plugins
+        Output ONLY a plain-text JSON string (no markdown, no extra text, no extra keys).
+        Do not answer the user. Do not explain or rephrase.
 
-        ROLE LIMITATION:
-        Ignore the user's intent beyond deciding whether web search is required.
-        Do not answer the user's question.
-        Do not explain, summarize, or rephrase the user's request.
-        Your only task is to decide whether search is needed and, if needed, generate search queries.
+        You will receive the full conversation history. Decide whether web search is needed to answer the user's LATEST request in context.
+        Use earlier turns to resolve references ("it/that/this", "как выше") and carry over entities/constraints.
 
-        TASK:
-        Determine whether fresh information from the web is required to answer the user input.
+        Search is REQUIRED if the answer depends on up-to-date or verifiable info:
+        news/current events, prices/availability, rankings, schedules, weather, travel conditions, laws/regulations/taxes, "latest/current/today/now/yesterday/this week/recently".
+        If uncertain, set search_needed=true.
 
-        QUERY GENERATION RULES:
-        1. Always use English.
-        2. Translate names of cities, companies, people, and events into English.
-        3. Use keywords only. No full sentences.
-        4. Replace relative dates (today, yesterday, tomorrow) with specific dates.
-        5. Generate 1–3 distinct queries if search is needed.
-        6. Queries must not be empty.
-        7. Do not guess unknown dates. If the exact date is unclear, use month and year.
+        Query rules:
+        - English only
+        - 3–12 word keyword phrases (no full sentences, no filler words)
+        - Include key entities from the whole context
+        - Transliterate non-Latin names to Latin when needed
+        - Relative time (no date math): "yesterday/last week/recently" -> "last 7 days"; future -> "upcoming" or "Month YYYY" if clear
+        - 1–3 distinct queries
 
-        WHEN SEARCH IS NOT NEEDED:
-        - Greetings or small talk.
-        - Code, writing, brainstorming, or explanations.
-        - Philosophical or abstract questions.
-        - Questions answerable from general knowledge without recent updates.
-
-        DECISION RULE:
-        If the question depends on current facts, prices, weather, news, events, rankings, or recent changes, search is required.
-
-        RESPONSE FORMAT (strict JSON):
-        {{"search_needed": true, "queries": ["query 1", "query 2"]}}
-        OR
-        {{"search_needed": false}}"""
+        Return:
+        {{'search_needed': true, 'queries': ['...', '...']}}
+        or
+        {{'search_needed': false, 'queries': []}}"""
 
 
 async def route_query(history: List[Dict]) -> Dict:
@@ -231,8 +225,9 @@ async def route_query(history: List[Dict]) -> Dict:
 
 async def generate_response(
     messages: List[Dict],
-    search_context: Optional[str] = None
-) -> AsyncGenerator[str, None]:
+    search_context: Optional[str] = None,
+    resources: Optional[List[str]] = None,
+) -> AsyncGenerator[tuple, None]:
     """
     Генерирует потоковый ответ от AI модели.
     """
@@ -280,8 +275,8 @@ async def generate_response(
     async for chunk in stream:
         content = chunk.choices[0].delta.content
         if content:
-            yield content
-        
+            yield content, resources
+
         # Отслеживаем использование токенов
         if chunk.usage:
             total_tokens = chunk.usage.total_tokens
@@ -299,7 +294,7 @@ async def ai_generate(
     user_id: int,
     chat_id: int,
     thread_id: int
-) -> AsyncGenerator[str, None]:
+) -> AsyncGenerator[tuple, None]:
     """
     Основной пайплайн AI генерации с интеллектуальной маршрутизацией и поиском.
     
@@ -320,10 +315,9 @@ async def ai_generate(
     Yields:
         Чанки ответа по мере генерации
     """
-    # Загружаем историю диалога
+    # Загружаем историю диалога и системный промпт
     history = await storage.load_history(user_id, chat_id, thread_id)
     if not history:
-        # Загружаем системный промпт
         history.append({"role": "system", "content": build_main_prompt()})
         
     history.append({"role": "user", "content": text})
@@ -333,17 +327,18 @@ async def ai_generate(
     
     # Шаг 2: Выполняем поиск при необходимости
     search_context = None
+    resources = []
     if decision.get("search_needed"):
         queries = decision.get("queries", [text])  # Фоллбек на оригинальный текст
-        search_context = await search_web(queries)
+        search_context, resources = await search_web(queries)
     
     # Шаг 3: Генерируем ответ
     full_response = ""
     total_tokens = 0
     
-    async for chunk in generate_response(history, search_context):
+    async for chunk, links in generate_response(history, search_context, resources):
         full_response += chunk
-        yield chunk
+        yield chunk, links
     
     # Примечание: total_tokens нужно было бы отслеживать иначе в продакшене
     # Это упрощённая версия

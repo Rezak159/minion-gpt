@@ -1,7 +1,8 @@
+import html
 import asyncio
 import logging
 from aiogram import Router, F
-from aiogram.types import Message, CallbackQuery, ReplyKeyboardRemove, ErrorEvent
+from aiogram.types import Message, CallbackQuery, ReplyKeyboardRemove, ErrorEvent, LinkPreviewOptions
 from aiogram.filters import CommandStart, Command
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
@@ -12,8 +13,9 @@ from aiogram.exceptions import TelegramRetryAfter
 
 from app.generate import ai_generate, GENERATOR_MODEL
 from app.utils import smart_split
-from app.chat_storage import ChatStorage
-from app.user_storage import UserStorage 
+
+from app.database.chat_storage import ChatStorage
+from app.database.user_storage import UserStorage 
 
 router = Router()
 
@@ -66,7 +68,6 @@ async def cmd_settings(message: Message, user_storage: UserStorage):
         is_unlimited = limits['requests_per_day'] == -1
         
         stats = {
-            "model": limits['model'],
             "requests_today": user_data['requests_today'],
             "requests_limit": limits['requests_per_day'],
             "tokens_left": limits['tokens_per_day'] - user_data['tokens_today'] if limits['tokens_per_day'] != -1 else -1,
@@ -103,7 +104,7 @@ async def cmd_settings(message: Message, user_storage: UserStorage):
             
             f"<b>Твои лимиты (на сегодня):</b>\n"
             f"├ Запросы: <b>{requests_display}</b>\n"
-            f"├ Токены: <b>{tokens_display}</b>\n"
+            f"├ Осталось токенов: <b>{tokens_display}</b>\n"
             f"└ [{progress_bar}]\n\n"
             
             f"📊 <b>Статистика:</b>\n"
@@ -139,6 +140,22 @@ async def cmd_clear(message: Message, storage: ChatStorage, user_storage: UserSt
         logger.error(f'Ошибка при /clear: {e}', exc_info=True)
         await message.answer("❌ Что-то пошло не так. Попробуйте еще раз позже.")
 
+
+@router.message(Command('set_lim'))
+async def cmd_clear(message: Message, storage: ChatStorage, user_storage: UserStorage):    
+    try:
+        user = message.from_user
+        user_data = await user_storage.get_user(user.id)
+        if not user_data:
+            await message.answer("❌ Пользователь не найден. Попробуйте /start")
+            return
+        
+        await user_storage.reset_daily_limits(user.id)
+        await message.answer("Лимиты сброшены 🗑️")
+    except Exception as e:
+        logger.error(f'Ошибка при /sel_lim: {e}', exc_info=True)
+        await message.answer("❌ Что-то пошло не так. Попробуйте еще раз позже.")
+        
 
 @router.message(Gen.wait)
 async def wait(message: Message):
@@ -176,7 +193,7 @@ async def answer(message: Message, state: FSMContext, storage: ChatStorage, user
         await message.bot.send_message_draft(
             chat_id=message.chat.id,
             draft_id=message.message_id,
-            text="💡 <b><i>Думаю..</i></b>",
+            text="💡 <i>Думаю..</i>",
             message_thread_id=message.message_thread_id,
             parse_mode='HTML'
         )
@@ -186,8 +203,9 @@ async def answer(message: Message, state: FSMContext, storage: ChatStorage, user
         update_interval = 0.2  # минимальный интервал между обновлениями
         is_rate_limited = False
         rate_limit_until = 0
+        found_links = []
 
-        async for chunk in ai_generate(
+        async for chunk, resources in ai_generate(
             text=message.text,
             storage=storage,
             user_id=message.from_user.id,
@@ -196,6 +214,8 @@ async def answer(message: Message, state: FSMContext, storage: ChatStorage, user
         ):
             full_text += chunk
             current_time = asyncio.get_event_loop().time()
+            if resources and not found_links:
+                found_links = resources
 
             # Проверяем, прошло ли достаточно времени с последнего обновления
             # И не находимся ли мы в rate limit
@@ -249,13 +269,20 @@ async def answer(message: Message, state: FSMContext, storage: ChatStorage, user
             except Exception as e:
                 logger.error(f'Ошибка при генерации: {e}', exc_info=True)
 
+        full_text = html.escape(full_text)
+
         # ЗДЕСЬ используем smart_split для финальной отправки
         parts = smart_split(full_text)
 
         for i, part in enumerate(parts):
             try:
-                # Используем parse_mode=None (plain text) для избежания ошибок с Markdown
-                await message.answer(part, parse_mode=None)
+                if found_links and i == len(parts) - 1:
+                    links_formatted = [
+                        f'<a href="{link["url"]}">[{i+1}]</a>' 
+                        for i, link in enumerate(found_links)
+                    ]
+                    part += f"\n\n🌐 <i>Источники:</i> {', '.join(links_formatted)}"
+                await message.answer(part, parse_mode='HTML', link_preview_options=LinkPreviewOptions(is_disabled=True))
                 if i < len(parts) - 1:  # Пауза между частями
                     await asyncio.sleep(0.3)
             except Exception as e:
