@@ -80,9 +80,11 @@ async def cmd_settings(message: Message, user_storage: UserStorage):
         stats = {
             "requests_today": user_data["requests_today"],
             "requests_limit": limits["requests_per_day"],
-            "tokens_left": limits["tokens_per_day"] - user_data["tokens_today"]
-            if limits["tokens_per_day"] != -1
-            else -1,
+            "tokens_left": (
+                limits["tokens_per_day"] - user_data["tokens_today"]
+                if limits["tokens_per_day"] != -1
+                else -1
+            ),
             "status": user_data["tariff_plan"].capitalize(),
             "total_requests": user_data["total_requests"],
         }

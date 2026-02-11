@@ -6,15 +6,16 @@ from .base import BaseStorage, DB_PATH
 
 logger = logging.getLogger(__name__)
 
+
 class ChatStorage(BaseStorage):
     """Класс для хранения истории чатов в SQLite"""
-    
+
     def __init__(self, db_path: str = DB_PATH):
         super().__init__(db_path)
 
         # При создании объекта нельзя использовать await,
         # поэтому инициализацию БД делаем в отдельном методе
-    
+
     async def init_db(self):
         """
         Создает таблицу для хранения истории
@@ -24,7 +25,7 @@ class ChatStorage(BaseStorage):
         async with aiosqlite.connect(self.db_path) as conn:
             # Создаем курсор для выполнения SQL команд
             cursor = await conn.cursor()
-            
+
             # Создаем таблицу, если её еще нет (IF NOT EXISTS)
             await cursor.execute("""
                 CREATE TABLE IF NOT EXISTS database (
@@ -37,21 +38,17 @@ class ChatStorage(BaseStorage):
             """)
             # PRIMARY KEY означает уникальную комбинацию этих трех полей
             # Для каждого user_id + chat_id + thread_id будет одна запись
-            
+
             # Сохраняем изменения в БД
             await conn.commit()
             # После async with соединение автоматически закроется
-    
+
     async def save_history(
-        self, 
-        user_id: int, 
-        chat_id: int, 
-        thread_id: int, 
-        messages: list
+        self, user_id: int, chat_id: int, thread_id: int, messages: list
     ):
         """
         Сохраняет историю сообщений для конкретной темы
-        
+
         Args:
             user_id: ID пользователя в Telegram
             chat_id: ID чата в Telegram
@@ -61,59 +58,60 @@ class ChatStorage(BaseStorage):
         # Открываем соединение с БД
         async with aiosqlite.connect(self.db_path) as conn:
             cursor = await conn.cursor()
-            
+
             # Преобразуем список сообщений в JSON строку
             # ensure_ascii=False чтобы русские буквы не превращались в \u0430
             messages_json = json.dumps(messages, ensure_ascii=False)
-            
+
             # INSERT OR REPLACE = если запись существует - обновляем, если нет - создаем
-            await cursor.execute("""
+            await cursor.execute(
+                """
                 INSERT OR REPLACE INTO database 
                 (user_id, chat_id, thread_id, messages)
                 VALUES (?, ?, ?, ?)
-            """, (
-                user_id, 
-                chat_id, 
-                thread_id or 0,  # если thread_id None, ставим 0
-                messages_json
-            ))
+            """,
+                (
+                    user_id,
+                    chat_id,
+                    thread_id or 0,  # если thread_id None, ставим 0
+                    messages_json,
+                ),
+            )
             # Знаки ? - это плейсхолдеры, которые заменяются на значения из tuple
             # Это защита от SQL injection
-            
+
             # Сохраняем изменения
             await conn.commit()
-            
+
             logger.info(f"✅ Сохранено {len(messages)} сообщений для юзера {user_id}")
-    
-    async def load_history(
-        self, 
-        user_id: int, 
-        chat_id: int, 
-        thread_id: int
-    ) -> list:
+
+    async def load_history(self, user_id: int, chat_id: int, thread_id: int) -> list:
         """
         Загружает историю сообщений для конкретной темы
-        
+
         Args:
             user_id: ID пользователя
             chat_id: ID чата
             thread_id: ID темы
-            
+
         Returns:
             list: список сообщений или пустой список, если истории нет
         """
         async with aiosqlite.connect(self.db_path) as conn:
             cursor = await conn.cursor()
-            
+
             # SELECT выбирает только колонку messages
-            await cursor.execute("""
+            await cursor.execute(
+                """
                 SELECT messages FROM database
                 WHERE user_id = ? AND chat_id = ? AND thread_id = ?
-            """, (user_id, chat_id, thread_id or 0))
-            
+            """,
+                (user_id, chat_id, thread_id or 0),
+            )
+
             # fetchone() возвращает первую найденную строку или None
             result = await cursor.fetchone()
-            
+
             # Если запись найдена
             if result:
                 # result это tuple, берем первый элемент (JSON строка)
@@ -121,20 +119,15 @@ class ChatStorage(BaseStorage):
                 history = json.loads(result[0])
                 # logger.info(f"📖 Загружено {len(history)} сообщений для юзера {user_id}")
                 return history
-            
+
             # Если записи нет, возвращаем пустой список
             # logger.info(f"📭 История пуста для юзера {user_id}")
             return []
-    
-    async def clear_history(
-        self, 
-        user_id: int, 
-        chat_id: int, 
-        thread_id: int
-    ):
+
+    async def clear_history(self, user_id: int, chat_id: int, thread_id: int):
         """
         Удаляет историю для конкретной темы
-        
+
         Args:
             user_id: ID пользователя
             chat_id: ID чата
@@ -142,33 +135,36 @@ class ChatStorage(BaseStorage):
         """
         async with aiosqlite.connect(self.db_path) as conn:
             cursor = await conn.cursor()
-            
+
             # DELETE удаляет строку из таблицы
-            await cursor.execute("""
+            await cursor.execute(
+                """
                 DELETE FROM database
                 WHERE user_id = ? AND chat_id = ? AND thread_id = ?
-            """, (user_id, chat_id, thread_id or 0))
-            
+            """,
+                (user_id, chat_id, thread_id or 0),
+            )
+
             await conn.commit()
-            
+
             # logger.info(f"🗑️ История очищена для юзера {user_id}")
-    
+
     async def get_all_users(self) -> list:
         """
         Дополнительный метод: получает список всех пользователей в БД
         Полезно для статистики
-        
+
         Returns:
             list: список кортежей [(user_id, chat_id, thread_id), ...]
         """
         async with aiosqlite.connect(self.db_path) as conn:
             cursor = await conn.cursor()
-            
+
             # Выбираем все записи
             await cursor.execute("""
                 SELECT user_id, chat_id, thread_id FROM database
             """)
-            
+
             # fetchall() возвращает список всех строк
             results = await cursor.fetchall()
             return results
