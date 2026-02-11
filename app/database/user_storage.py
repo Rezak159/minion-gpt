@@ -270,3 +270,7 @@ class UserStorage(BaseStorage):
                 )
         
         return True, ""
+    
+
+    async def get_all_users(self) -> list:
+        pass
