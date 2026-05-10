@@ -9,4 +9,5 @@ dependencies = [
     "aiosqlite>=0.22.1",
     "ddgs>=9.10.0",
     "openai>=2.20.0",
+    "sqlalchemy>=2.0.46",
 ]

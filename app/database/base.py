@@ -1,12 +1,17 @@
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+from sqlalchemy.orm import sessionmaker, DeclarativeBase
+from sqlalchemy import create_engine
+
 DB_PATH = "database.db"
 
 
-class BaseStorage:
-    def __init__(self, db_path: str = DB_PATH):
-        """
-        Инициализация хранилища пользователей
+engine = create_async_engine(
+    url=f"sqlite:///{DB_PATH}",
+    echo=True,
+)
 
-        Args:
-            db_path: путь к файлу базы данных
-        """
-        self.db_path = db_path
+session_factory = async_sessionmaker(engine)
+
+
+class Base(DeclarativeBase):
+    pass
