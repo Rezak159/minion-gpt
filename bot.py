@@ -57,13 +57,12 @@ async def main():
     dp["storage"] = storage
     dp["user_storage"] = user_storage
 
-    dp.include_router(user_router)
-    dp.include_router(adm_router)
-    await set_commands(bot)
-
-    logger.info("Бот запущен.")
-
     try:
+        dp.include_router(user_router)
+        dp.include_router(adm_router)
+        await set_commands(bot)
+
+        logger.info("Бот запущен.")
         await dp.start_polling(bot)
     finally:
         await bot.session.close()
