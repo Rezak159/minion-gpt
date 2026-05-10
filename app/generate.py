@@ -1,14 +1,16 @@
 from openai import AsyncOpenAI
 from ddgs import DDGS
 import json
+import re
 from urllib.parse import urlparse
 from datetime import datetime
 from typing import List, Dict, AsyncGenerator, Optional
 
-from config import AI_TOKEN
+from config import AI_TOKEN, AI_URL
 
-ROUTER_MODEL = "openai/gpt-oss-20b"  # Быстрая модель для маршрутизации
-GENERATOR_MODEL = "openai/gpt-oss-120b"  # Мощная модель для ответов
+# openai/gpt-oss-120b
+ROUTER_MODEL = "deepseek-v4-flash"
+GENERATOR_MODEL = "deepseek-v4-flash"
 
 
 def build_main_prompt() -> str:
@@ -44,9 +46,8 @@ def build_main_prompt() -> str:
         - Без Markdown без HTML"""
 
 
-# Инициализация клиента OpenAI с бэкендом Groq
 client = AsyncOpenAI(
-    base_url="https://api.groq.com/openai/v1",
+    base_url=AI_URL,
     api_key=AI_TOKEN,
 )
 
@@ -131,7 +132,7 @@ async def search_web(queries: List[str]) -> str:
             continue
 
     if not all_results:
-        return "Результаты поиска не найдены." ""
+        return "Результаты поиска не найдены."
 
     formatted, links = format_search_results(all_results)
     print(
@@ -199,13 +200,12 @@ async def route_query(history: List[Dict]) -> Dict:
         response = await client.chat.completions.create(
             model=ROUTER_MODEL,
             messages=router_messages,
-            response_format={"type": "json_object"},  # Принудительный JSON на выходе
-            temperature=0.1,  # Низкая температура для стабильности
-            reasoning_effort="low",
-            tool_choice="none",
+            response_format={"type": "json_object"},
+            temperature=0.1,
         )
 
         decision_text = response.choices[0].message.content
+        decision_text = re.sub(r"<think>.*?</think>", "", decision_text, flags=re.DOTALL).strip()
         decision = json.loads(decision_text)
 
         print(f"💡 [Роутер] Решение: {decision}")
@@ -268,20 +268,51 @@ async def generate_response(
         model=GENERATOR_MODEL,
         messages=final_messages,
         stream=True,
-        reasoning_effort="low",
     )
 
-    full_response = ""
     total_tokens = 0
+    buf = ""
+    in_thought = False
 
     async for chunk in stream:
         content = chunk.choices[0].delta.content
-        if content:
-            yield content, resources
 
-        # Отслеживаем использование токенов
         if chunk.usage:
             total_tokens = chunk.usage.total_tokens
+
+        if not content:
+            continue
+
+        buf += content
+
+        if in_thought:
+            if "</thought>" in buf:
+                in_thought = False
+                buf = buf[buf.index("</thought>") + len("</thought>") :]
+            else:
+                buf = buf[-9:]
+                continue
+
+        while "<thought>" in buf:
+            before, _, buf = buf.partition("<thought>")
+            if before:
+                yield before, resources
+            in_thought = True
+            if "</thought>" in buf:
+                _, _, buf = buf.partition("</thought>")
+                in_thought = False
+            else:
+                buf = buf[-9:]
+                break
+
+        if not in_thought:
+            safe = buf[:-8] if len(buf) > 8 else ""
+            if safe:
+                yield safe, resources
+            buf = buf[len(safe) :]
+
+    if buf and not in_thought:
+        yield buf, resources
 
     print(f"✅ [Генератор] Завершено. Использовано токенов: {total_tokens}")
 
