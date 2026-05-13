@@ -10,4 +10,5 @@ dependencies = [
     "ddgs>=9.10.0",
     "openai>=2.20.0",
     "sqlalchemy>=2.0.46",
+    "tavily-python>=0.7.24",
 ]
